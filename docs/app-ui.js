@@ -78,6 +78,10 @@ function __wbg_get_imports() {
             const ret = arg0.controlTransferOut(arg1, arg2);
             return ret;
         }, arguments); },
+        __wbg_createElement_9b0aab265c549ded: function() { return handleError(function (arg0, arg1, arg2) {
+            const ret = arg0.createElement(getStringFromWasm0(arg1, arg2));
+            return ret;
+        }, arguments); },
         __wbg_data_7c242213f0362c4d: function(arg0) {
             const ret = arg0.data;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -94,6 +98,9 @@ function __wbg_get_imports() {
             const ret = arg0.document;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
+        __wbg_drawImage_91631f4ec3c9e0a8: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+            arg0.drawImage(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+        }, arguments); },
         __wbg_error_8d9a8e04cd1d3588: function(arg0) {
             console.error(arg0);
         },
@@ -353,6 +360,9 @@ function __wbg_get_imports() {
         __wbg_set_font_b038797b3573ae5e: function(arg0, arg1, arg2) {
             arg0.font = getStringFromWasm0(arg1, arg2);
         },
+        __wbg_set_height_b6548a01bdcb689a: function(arg0, arg1) {
+            arg0.height = arg1 >>> 0;
+        },
         __wbg_set_index_47d76508ddfcfbd9: function(arg0, arg1) {
             arg0.index = arg1;
         },
@@ -394,6 +404,9 @@ function __wbg_get_imports() {
         },
         __wbg_set_vendor_id_329892bc758af78c: function(arg0, arg1) {
             arg0.vendorId = arg1;
+        },
+        __wbg_set_width_c0fcaa2da53cd540: function(arg0, arg1) {
+            arg0.width = arg1 >>> 0;
         },
         __wbg_stack_3b0d974bbf31e44f: function(arg0, arg1) {
             const ret = arg1.stack;

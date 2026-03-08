@@ -181,8 +181,8 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
                             .and_then(|v| v.as_f64())
                             .unwrap_or(0.0) as u32;
 
-                        let s = state_c.borrow();
-                        if let Some(ref renderer) = s.renderer {
+                        let mut s = state_c.borrow_mut();
+                        if let Some(ref mut renderer) = s.renderer {
                             let mut wf_vec = Vec::new();
                             if let Some(ref wf_val) = wf_data {
                                 if !wf_val.is_undefined() {

@@ -11,6 +11,11 @@ pub struct WaterfallRenderer {
     width: u32,
     height: u32,
     spectrum_height: u32,
+    /// Off-screen canvas used to hold the raw waterfall ImageData before scaling.
+    off_canvas: HtmlCanvasElement,
+    off_ctx: CanvasRenderingContext2d,
+    off_w: u32,
+    off_h: u32,
 }
 
 impl WaterfallRenderer {
@@ -23,18 +28,42 @@ impl WaterfallRenderer {
         let height = canvas.height();
         let spectrum_height = height / 4; // Top quarter for spectrum
 
+        let doc = web_sys::window().unwrap().document().unwrap();
+        let off_canvas: HtmlCanvasElement =
+            doc.create_element("canvas")?.dyn_into()?;
+        off_canvas.set_width(1);
+        off_canvas.set_height(1);
+        let off_ctx: CanvasRenderingContext2d = off_canvas
+            .get_context("2d")?
+            .ok_or("off-screen 2d ctx")?
+            .dyn_into()?;
+
         Ok(WaterfallRenderer {
             canvas,
             ctx,
             width,
             height,
             spectrum_height,
+            off_canvas,
+            off_ctx,
+            off_w: 0,
+            off_h: 0,
         })
+    }
+
+    /// Ensure the off-screen canvas matches the waterfall dimensions.
+    fn ensure_offscreen(&mut self, w: u32, h: u32) {
+        if self.off_w != w || self.off_h != h {
+            self.off_canvas.set_width(w);
+            self.off_canvas.set_height(h);
+            self.off_w = w;
+            self.off_h = h;
+        }
     }
 
     /// Render spectrum line (top overlay) and waterfall image (bottom).
     pub fn render(
-        &self,
+        &mut self,
         spectrum: &[f32],
         waterfall_rgba: &[u8],
         wf_width: u32,
@@ -48,24 +77,32 @@ impl WaterfallRenderer {
         self.ctx.set_fill_style_str("#000000");
         self.ctx.fill_rect(0.0, 0.0, w, h);
 
-        // ── Draw waterfall (bottom part) ───────────────────────────────
+        // ── Draw waterfall (bottom part) via offscreen canvas + drawImage scaling
         if !waterfall_rgba.is_empty() && wf_width > 0 && wf_height > 0 {
-            let clamped = wasm_bindgen::Clamped(waterfall_rgba);
-            if let Ok(img_data) = ImageData::new_with_u8_clamped_array(clamped, wf_width) {
-                // Scale waterfall to fill bottom of canvas
-                // We need to put it on an offscreen bitmap or use drawImage
-                // For simplicity, use putImageData at native resolution
-                // and let CSS scaling handle the rest.
-                let wf_top = sh;
-                let wf_canvas_height = h - sh;
+            let expected_len = (wf_width * wf_height * 4) as usize;
+            if waterfall_rgba.len() == expected_len {
+                self.ensure_offscreen(wf_width, wf_height);
 
-                // Draw row by row scaled
-                let y_scale = wf_canvas_height / wf_height as f64;
-                let x_scale = w / wf_width as f64;
+                let clamped = wasm_bindgen::Clamped(waterfall_rgba);
+                if let Ok(img_data) =
+                    ImageData::new_with_u8_clamped_array(clamped, wf_width)
+                {
+                    self.off_ctx.put_image_data(&img_data, 0, 0)?;
 
-                // For performance, just putImageData without scaling
-                // Then use CSS to stretch the canvas
-                self.ctx.put_image_data(&img_data, 0, sh as i32)?;
+                    // Scale from (wf_width × wf_height) to fill the bottom of the main canvas
+                    self.ctx
+                        .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                            &self.off_canvas,
+                            0.0,
+                            0.0,
+                            wf_width as f64,
+                            wf_height as f64,
+                            0.0,
+                            sh,
+                            w,
+                            h - sh,
+                        )?;
+                }
             }
         }
 
