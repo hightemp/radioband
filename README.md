@@ -9,6 +9,8 @@ Runs entirely in the browser — no server, no native driver, no extensions.
 
 DEMO: https://hightemp.github.io/radioband/
 
+![](screenshots/2026-03-08_16-17.png)
+
 ## Features
 
 | Feature | Status |
