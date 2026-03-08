@@ -122,3 +122,15 @@ pub fn set_mode(mode: &str) {
         }
     });
 }
+
+/// Clear the waterfall buffer (e.g. after frequency change).
+#[wasm_bindgen]
+pub fn clear_waterfall() {
+    PIPELINE.with(|p| {
+        let mut borrow = p.borrow_mut();
+        if let Some(ref mut pipeline) = *borrow {
+            pipeline.waterfall.clear();
+            console::log_1(&"sdr-worker: waterfall cleared".into());
+        }
+    });
+}

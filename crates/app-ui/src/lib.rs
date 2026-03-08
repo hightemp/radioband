@@ -36,6 +36,10 @@ struct AppState {
     mode: String,
     sample_rate: u32,
     fft_size: u32,
+    /// Pending frequency change (Hz) to be applied by read_loop.
+    pending_freq: Option<u32>,
+    /// Pending gain change (tenth-dB) to be applied by read_loop.
+    pending_gain: Option<i32>,
 }
 
 /// SDR device lives in its own cell so it can be borrowed independently
@@ -135,6 +139,8 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
         mode: "wfm".to_string(),
         sample_rate: 2_400_000,
         fft_size: 2048,
+        pending_freq: None,
+        pending_gain: None,
     }));
 
     let sdr_cell: SdrCell = Rc::new(RefCell::new(None));
@@ -309,40 +315,29 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Set Frequency button ───────────────────────────────────────────
     {
         let state_c = state.clone();
-        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
-            let state_cc = state_c.clone();
-            let sdr_cc = sdr_c.clone();
-            let doc_cc = doc_c.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Some(input) = doc_cc.get_element_by_id("input-freq") {
-                    let input: HtmlInputElement = input.unchecked_into();
-                    if let Ok(mhz) = input.value().parse::<f64>() {
-                        let freq = (mhz * 1_000_000.0) as u32;
-                        state_cc.borrow_mut().frequency = freq;
-                        // Update waterfall labels
-                        {
-                            let mut s = state_cc.borrow_mut();
-                            let rate = s.sample_rate as f64;
-                            if let Some(ref mut renderer) = s.renderer {
-                                renderer.set_frequency_info(freq as f64, rate);
-                            }
-                        }
-                        // Retry loop: SDR may be temporarily held by read_loop
-                        for _ in 0..50 {
-                            let sdr_opt = sdr_cc.borrow_mut().take();
-                            if let Some(mut sdr) = sdr_opt {
-                                let _ = sdr.set_center_freq(freq).await;
-                                let _ = sdr.reset_buffer().await;
-                                *sdr_cc.borrow_mut() = Some(sdr);
-                                break;
-                            }
-                            sleep_ms(20).await;
-                        }
+            if let Some(input) = doc_c.get_element_by_id("input-freq") {
+                let input: HtmlInputElement = input.unchecked_into();
+                if let Ok(mhz) = input.value().parse::<f64>() {
+                    let freq = (mhz * 1_000_000.0) as u32;
+                    let mut s = state_c.borrow_mut();
+                    s.frequency = freq;
+                    s.pending_freq = Some(freq);
+                    // Update waterfall labels
+                    let rate = s.sample_rate as f64;
+                    if let Some(ref mut renderer) = s.renderer {
+                        renderer.set_frequency_info(freq as f64, rate);
                     }
+                    console::log_1(
+                        &format!(
+                            "Radioband: frequency change queued: {:.3} MHz ({} Hz)",
+                            mhz, freq
+                        )
+                        .into(),
+                    );
                 }
-            });
+            }
         }) as Box<dyn FnMut(_)>);
         let btn: HtmlButtonElement = doc
             .get_element_by_id("btn-set-freq")
@@ -355,38 +350,27 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Gain slider ────────────────────────────────────────────────────
     {
         let state_c = state.clone();
-        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
-            let state_cc = state_c.clone();
-            let sdr_cc = sdr_c.clone();
-            let doc_cc = doc_c.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                if let Some(input) = doc_cc.get_element_by_id("input-gain") {
-                    let input: HtmlInputElement = input.unchecked_into();
-                    if let Ok(val) = input.value().parse::<i32>() {
-                        state_cc.borrow_mut().gain = val;
-                        if let Some(label) = doc_cc.get_element_by_id("gain-value") {
-                            let text = if val == 0 {
-                                "Auto".to_string()
-                            } else {
-                                format!("{:.1} dB", val as f32 / 10.0)
-                            };
-                            label.set_text_content(Some(&text));
-                        }
-                        // Apply gain to hardware if connected
-                        for _ in 0..50 {
-                            let sdr_opt = sdr_cc.borrow_mut().take();
-                            if let Some(mut sdr) = sdr_opt {
-                                let _ = sdr.set_gain(val).await;
-                                *sdr_cc.borrow_mut() = Some(sdr);
-                                break;
-                            }
-                            sleep_ms(20).await;
-                        }
+            if let Some(input) = doc_c.get_element_by_id("input-gain") {
+                let input: HtmlInputElement = input.unchecked_into();
+                if let Ok(val) = input.value().parse::<i32>() {
+                    let mut s = state_c.borrow_mut();
+                    s.gain = val;
+                    s.pending_gain = Some(val);
+                    if let Some(label) = doc_c.get_element_by_id("gain-value") {
+                        let text = if val == 0 {
+                            "Auto".to_string()
+                        } else {
+                            format!("{:.1} dB", val as f32 / 10.0)
+                        };
+                        label.set_text_content(Some(&text));
                     }
+                    console::log_1(
+                        &format!("Radioband: gain change queued: {}", val).into(),
+                    );
                 }
-            });
+            }
         }) as Box<dyn FnMut(_)>);
         let input: HtmlInputElement = doc
             .get_element_by_id("input-gain")
@@ -596,7 +580,58 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
         } else {
             // Take SDR out so no borrow is held across the USB await
             let sdr_opt = sdr_cell.borrow_mut().take();
-            if let Some(sdr) = sdr_opt {
+            if let Some(mut sdr) = sdr_opt {
+                // ── Apply pending frequency change ──────────────────────
+                let pending_freq = state.borrow_mut().pending_freq.take();
+                if let Some(freq) = pending_freq {
+                    console::log_1(
+                        &format!("read_loop: applying frequency change to {} Hz", freq).into(),
+                    );
+                    match sdr.set_center_freq(freq).await {
+                        Ok(()) => {
+                            let _ = sdr.reset_buffer().await;
+                            console::log_1(
+                                &"read_loop: frequency change applied successfully".into(),
+                            );
+                            // Tell worker to clear waterfall
+                            let s = state.borrow();
+                            let msg = Object::new();
+                            let _ = Reflect::set(&msg, &"type".into(), &"clear_waterfall".into());
+                            let _ = s.worker.post_message(&msg);
+                        }
+                        Err(e) => {
+                            console::error_1(
+                                &format!("read_loop: frequency change FAILED: {:?}", e).into(),
+                            );
+                            // Re-queue so it retries next iteration
+                            state.borrow_mut().pending_freq = Some(freq);
+                        }
+                    }
+                }
+
+                // ── Apply pending gain change ───────────────────────────
+                let pending_gain = state.borrow_mut().pending_gain.take();
+                if let Some(gain) = pending_gain {
+                    console::log_1(
+                        &format!("read_loop: applying gain change to {}", gain).into(),
+                    );
+                    match sdr.set_gain(gain).await {
+                        Ok(()) => {
+                            console::log_1(
+                                &"read_loop: gain change applied successfully".into(),
+                            );
+                        }
+                        Err(e) => {
+                            console::error_1(
+                                &format!("read_loop: gain change FAILED: {:?}", e).into(),
+                            );
+                            // Re-queue so it retries next iteration
+                            state.borrow_mut().pending_gain = Some(gain);
+                        }
+                    }
+                }
+
+                // ── Read IQ data ────────────────────────────────────────
                 if frame_count == 0 {
                     console::log_1(&"read_loop: calling read_block...".into());
                 }
@@ -631,7 +666,7 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
                     }
                 }
             } else {
-                // SDR temporarily taken by another operation (e.g. frequency change)
+                // SDR temporarily taken by another operation
                 // Just wait and retry on next iteration
             }
         }

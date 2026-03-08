@@ -5,6 +5,14 @@ let wasm_bindgen = (function(exports) {
     }
 
     /**
+     * Clear the waterfall buffer (e.g. after frequency change).
+     */
+    function clear_waterfall() {
+        wasm.clear_waterfall();
+    }
+    exports.clear_waterfall = clear_waterfall;
+
+    /**
      * Configure the DSP pipeline.
      * @param {number} sample_rate
      * @param {number} fft_size

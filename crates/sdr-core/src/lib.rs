@@ -357,6 +357,12 @@ impl WaterfallBuffer {
         }
         out
     }
+
+    /// Clear all waterfall data (e.g. after frequency change).
+    pub fn clear(&mut self) {
+        self.data.fill(0);
+        self.write_pos = 0;
+    }
 }
 
 // ── DSP Pipeline ───────────────────────────────────────────────────────────
@@ -566,5 +572,22 @@ mod tests {
         let result = pipeline.process(&raw);
         assert_eq!(result.spectrum.len(), 2048);
         assert!(!result.audio.is_empty());
+    }
+
+    #[test]
+    fn test_waterfall_clear() {
+        let mut wf = WaterfallBuffer::new(256, 100);
+        // Push some spectrum lines
+        let line: Vec<f32> = (0..256).map(|i| -60.0 + (i as f32 / 256.0) * 60.0).collect();
+        for _ in 0..10 {
+            wf.push_line(&line);
+        }
+        // Verify we have non-zero data
+        assert!(wf.data.iter().any(|&b| b != 0));
+        assert_eq!(wf.write_pos, 10);
+        // Clear and verify
+        wf.clear();
+        assert!(wf.data.iter().all(|&b| b == 0));
+        assert_eq!(wf.write_pos, 0);
     }
 }

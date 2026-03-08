@@ -51,6 +51,11 @@ async function start() {
                 break;
             }
 
+            case 'clear_waterfall': {
+                wasm.clear_waterfall();
+                break;
+            }
+
             default:
                 console.warn('Worker: unknown message type', msg.type);
         }
