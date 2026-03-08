@@ -44,7 +44,7 @@ impl AudioBridge {
         options.set_output_channel_count(&outputs);
 
         let node =
-            AudioWorkletNode::new_with_options(&self.ctx, "pcm-player-processor", &options)?;
+            AudioWorkletNode::new_with_options(&self.ctx, "radioband-processor", &options)?;
 
         // Connect to destination
         node.connect_with_audio_node(&self.ctx.destination())?;
