@@ -3,7 +3,7 @@
 //! Handles device discovery, initialization, register access,
 //! R820T/R828D tuner configuration, and bulk IQ sample reading.
 
-use js_sys::{Array, Object, Uint8Array};
+use js_sys::{Object, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
@@ -24,9 +24,15 @@ const BLOCK_USB: u16 = 1; // USB interface
 // USB block registers
 const USB_SYSCTL: u16 = 0x2000;
 const USB_EPA_CFG: u16 = 0x2148;
-const USB_EPA_CTL: u16 = 0x2048;
+const USB_EPA_CTL: u16 = 0x2148;
 const USB_EPA_MAXPKT: u16 = 0x2158;
 const USB_EPA_FIFO_CFG: u16 = 0x2014;
+
+// I2C block index for tuner access through RTL2832U passthrough
+const I2C_INDEX: u16 = 0x0600; // block 6 << 8
+
+// Demod I2C base (OR'd into page index)
+const DEMOD_I2C_BASE: u16 = 0x000A;
 
 // I2C addresses
 const R820T_I2C_ADDR: u8 = 0x34;
@@ -203,6 +209,9 @@ impl RtlSdr {
 
     /// Set tuner gain in tenths of dB.
     pub async fn set_gain(&mut self, gain_tenth_db: i32) -> Result<(), JsValue> {
+        // Ensure I2C repeater is on
+        self.enable_i2c_repeater().await?;
+
         // Map gain to R820T LNA + mixer gain register values
         let lna_gain = ((gain_tenth_db.clamp(0, 500) / 35) as u8).min(15);
         let mixer_gain = 0x10_u8; // auto
@@ -257,15 +266,16 @@ impl RtlSdr {
         self.sample_rate
     }
 
-    // ── Private: RTL2832U register access ──────────────────────────────────
+    // ── Private: Low-level vendor control transfers ───────────────────────
 
-    async fn write_reg(&self, block: u16, addr: u16, data: &[u8]) -> Result<(), JsValue> {
+    /// Vendor control OUT (host → device).
+    async fn ctrl_out(&self, value: u16, index: u16, data: &[u8]) -> Result<(), JsValue> {
         let setup = UsbControlTransferParameters::new(
-            block << 8,           // index
-            UsbRecipient::Device, // recipient
-            0,                    // request
+            index,
+            UsbRecipient::Device,
+            0, // request = 0 for all RTL2832U vendor transfers
             UsbRequestType::Vendor,
-            addr, // value
+            value,
         );
         let array = Uint8Array::from(data);
         let promise = self
@@ -275,13 +285,14 @@ impl RtlSdr {
         Ok(())
     }
 
-    async fn read_reg(&self, block: u16, addr: u16, len: u16) -> Result<Vec<u8>, JsValue> {
+    /// Vendor control IN (device → host).
+    async fn ctrl_in(&self, value: u16, index: u16, len: u16) -> Result<Vec<u8>, JsValue> {
         let setup = UsbControlTransferParameters::new(
-            block << 8,
+            index,
             UsbRecipient::Device,
             0,
             UsbRequestType::Vendor,
-            addr,
+            value,
         );
         let promise = self.device.control_transfer_in(&setup, len);
         let result: UsbInTransferResult = JsFuture::from(promise).await?.unchecked_into();
@@ -296,7 +307,21 @@ impl RtlSdr {
         }
     }
 
-    /// Write to the demodulator register block.
+    // ── Private: USB block register access ─────────────────────────────────
+
+    async fn write_reg(&self, block: u16, addr: u16, data: &[u8]) -> Result<(), JsValue> {
+        self.ctrl_out(addr, block << 8, data).await
+    }
+
+    #[allow(dead_code)]
+    async fn read_reg(&self, block: u16, addr: u16, len: u16) -> Result<Vec<u8>, JsValue> {
+        self.ctrl_in(addr, block << 8, len).await
+    }
+
+    // ── Private: Demodulator register access ───────────────────────────────
+    //
+    // The demod index has a special base 0x0A OR'd in: (page << 8) | 0x0A.
+
     async fn demod_write_reg(
         &self,
         page: u16,
@@ -305,24 +330,36 @@ impl RtlSdr {
         len: u8,
     ) -> Result<(), JsValue> {
         let real_addr = (addr << 8) | 0x20;
+        let index = (page << 8) | DEMOD_I2C_BASE;
         let data = if len == 1 {
             vec![val as u8]
         } else {
             vec![(val >> 8) as u8, val as u8]
         };
-        self.write_reg(page, real_addr, &data).await?;
-        // Read status register
+        self.ctrl_out(real_addr, index, &data).await?;
+        // Read status register to complete the write
         self.demod_read_reg(0x0A, 0x01).await?;
         Ok(())
     }
 
     async fn demod_read_reg(&self, page: u16, addr: u16) -> Result<u8, JsValue> {
         let real_addr = (addr << 8) | 0x20;
-        let data = self.read_reg(page, real_addr, 1).await?;
+        let index = (page << 8) | DEMOD_I2C_BASE;
+        let data = self.ctrl_in(real_addr, index, 1).await?;
         Ok(data.first().copied().unwrap_or(0))
     }
 
-    // ── Private: I2C register access (for tuner) ───────────────────────────
+    // ── Private: I2C register access (for R820T tuner) ─────────────────────
+    //
+    // Uses the RTL2832U I2C passthrough: block index = 0x0600 (I2C block 6).
+    // Data format for write: [register_address, value].
+    // R820T always reads from register 0 and auto-increments; returned bytes
+    // are bit-reversed.
+
+    /// Enable the I2C repeater so the host can talk to the tuner.
+    async fn enable_i2c_repeater(&self) -> Result<(), JsValue> {
+        self.demod_write_reg(1, 0x01, 0x18, 1).await
+    }
 
     async fn write_i2c_reg(
         &self,
@@ -330,52 +367,20 @@ impl RtlSdr {
         reg_addr: u8,
         value: u8,
     ) -> Result<(), JsValue> {
-        let setup = UsbControlTransferParameters::new(
-            reg_addr as u16,      // index = register address
-            UsbRecipient::Device, // recipient
-            3,                    // request = I2C write
-            UsbRequestType::Vendor,
-            i2c_addr as u16, // value = I2C device address
-        );
-        let data = Uint8Array::from(&[value][..]);
-        let promise = self
-            .device
-            .control_transfer_out_with_u8_array(&setup, &data)?;
-        JsFuture::from(promise).await?;
-        Ok(())
+        self.ctrl_out(i2c_addr as u16, I2C_INDEX, &[reg_addr, value])
+            .await
     }
 
     async fn read_i2c_reg(&self, i2c_addr: u8, reg_addr: u8) -> Result<u8, JsValue> {
-        // Write register address first
-        let setup_w = UsbControlTransferParameters::new(
-            reg_addr as u16,
-            UsbRecipient::Device,
-            3,
-            UsbRequestType::Vendor,
-            i2c_addr as u16,
-        );
-        let reg_data = Uint8Array::from(&[reg_addr][..]);
-        let promise = self
-            .device
-            .control_transfer_out_with_u8_array(&setup_w, &reg_data)?;
-        JsFuture::from(promise).await?;
-
-        // Read
-        let setup_r = UsbControlTransferParameters::new(
-            0,
-            UsbRecipient::Device,
-            4, // request = I2C read
-            UsbRequestType::Vendor,
-            i2c_addr as u16,
-        );
-        let promise = self.device.control_transfer_in(&setup_r, 1);
-        let result: UsbInTransferResult = JsFuture::from(promise).await?.unchecked_into();
-        if let Some(dv) = result.data() {
-            let arr = Uint8Array::new(&dv.buffer());
-            Ok(arr.get_index(0))
-        } else {
-            Ok(0)
-        }
+        // R820T reads always start at register 0, so read (reg+1) bytes.
+        let data = self
+            .ctrl_in(i2c_addr as u16, I2C_INDEX, (reg_addr as u16) + 1)
+            .await?;
+        Ok(data
+            .get(reg_addr as usize)
+            .copied()
+            .map(reverse_bits)
+            .unwrap_or(0))
     }
 
     async fn write_i2c_regs(
@@ -452,6 +457,9 @@ impl RtlSdr {
     // ── Private: R820T tuner initialization ────────────────────────────────
 
     async fn init_r820t(&self) -> Result<(), JsValue> {
+        // Enable I2C repeater so we can talk to the tuner
+        self.enable_i2c_repeater().await?;
+
         // Write init register values
         self.write_i2c_regs(R820T_I2C_ADDR, 0x05, &R820T_INIT_REGS)
             .await?;
@@ -463,6 +471,9 @@ impl RtlSdr {
     }
 
     async fn set_r820t_freq(&self, freq: u32) -> Result<(), JsValue> {
+        // Ensure I2C repeater is on (set_sample_rate may have turned it off)
+        self.enable_i2c_repeater().await?;
+
         // R820T PLL calculation
         // Select LO divider based on frequency
         let (lo_div, div_num) = if freq < 50_000_000 {
@@ -517,6 +528,15 @@ impl RtlSdr {
         log("RTL-SDR: PLL lock timeout (may still work)");
         Ok(())
     }
+}
+
+/// Reverse bits in a byte.  R820T returns bit-reversed register data.
+fn reverse_bits(b: u8) -> u8 {
+    let mut v = b;
+    v = ((v >> 1) & 0x55) | ((v & 0x55) << 1);
+    v = ((v >> 2) & 0x33) | ((v & 0x33) << 2);
+    v = (v >> 4) | (v << 4);
+    v
 }
 
 fn log(msg: &str) {

@@ -1,5 +1,8 @@
 # 📻 Radioband
 
+![Experimental](https://img.shields.io/badge/status-experimental-orange)
+![Vibe Coded](https://img.shields.io/badge/vibe-coded-blueviolet)
+
 Browser-based SPA on **Rust + WebAssembly** for receiving FM / AM radio via
 **RTL-SDR** (RTL2832U + R820T) through the **WebUSB** API.
 Runs entirely in the browser — no server, no native driver, no extensions.
