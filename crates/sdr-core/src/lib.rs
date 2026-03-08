@@ -398,7 +398,8 @@ impl DspPipeline {
             iq_filter: FirLowPass::new(iq_cutoff, config.sample_rate as f32, 31),
             audio_filter: FirLowPassReal::new(15_000.0, intermediate_rate, 31),
             fm_demod: FmDemod::new(fm_dev, intermediate_rate),
-            de_emphasis: DeEmphasis::new(75.0, intermediate_rate / audio_decim as f32),
+            // De-emphasis operates at final audio rate (AFTER decimation), per reference
+            de_emphasis: DeEmphasis::new(50.0, config.audio_rate as f32),
             iq_decim,
             audio_decim,
             waterfall: WaterfallBuffer::new(config.fft_size, 200),
@@ -427,17 +428,17 @@ impl DspPipeline {
             DemodMode::AM => am_demod(&decimated),
         };
 
-        // De-emphasis (only for WFM)
-        if self.config.mode == DemodMode::WFM {
-            self.de_emphasis.process(&mut audio);
-        }
-
-        // Audio decimation if needed
-        let audio = if self.audio_decim > 1 {
+        // Audio decimation if needed (BEFORE de-emphasis, per reference)
+        let mut audio = if self.audio_decim > 1 {
             self.audio_filter.filter_decimate(&audio, self.audio_decim)
         } else {
             audio
         };
+
+        // De-emphasis (only for WFM, applied AFTER decimation to audio rate)
+        if self.config.mode == DemodMode::WFM {
+            self.de_emphasis.process(&mut audio);
+        }
 
         // Clamp audio to -1..1
         let audio: Vec<f32> = audio.iter().map(|&s| s.clamp(-1.0, 1.0)).collect();

@@ -321,6 +321,14 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
                     if let Ok(mhz) = input.value().parse::<f64>() {
                         let freq = (mhz * 1_000_000.0) as u32;
                         state_cc.borrow_mut().frequency = freq;
+                        // Update waterfall labels
+                        {
+                            let mut s = state_cc.borrow_mut();
+                            let rate = s.sample_rate as f64;
+                            if let Some(ref mut renderer) = s.renderer {
+                                renderer.set_frequency_info(freq as f64, rate);
+                            }
+                        }
                         // Retry loop: SDR may be temporarily held by read_loop
                         for _ in 0..50 {
                             let sdr_opt = sdr_cc.borrow_mut().take();
@@ -453,6 +461,16 @@ async fn connect_device(
     *sdr_cell.borrow_mut() = Some(sdr);
     state.borrow_mut().audio = Some(audio);
     state.borrow_mut().mock_mode = false;
+
+    // Update waterfall frequency labels
+    {
+        let mut s = state.borrow_mut();
+        let freq = s.frequency as f64;
+        let rate = s.sample_rate as f64;
+        if let Some(ref mut renderer) = s.renderer {
+            renderer.set_frequency_info(freq, rate);
+        }
+    }
 
     set_btn_enabled(doc, "btn-connect", false);
     set_btn_enabled(doc, "btn-mock", false);
@@ -618,8 +636,8 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
             }
         }
 
-        // Yield to browser — roughly 30fps
-        sleep_ms(16).await;
+        // Yield to browser — minimal delay, let USB pacing drive timing
+        sleep_ms(0).await;
     }
 }
 

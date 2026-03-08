@@ -16,6 +16,10 @@ pub struct WaterfallRenderer {
     off_ctx: CanvasRenderingContext2d,
     off_w: u32,
     off_h: u32,
+    /// Center frequency in Hz (for labels).
+    center_freq: f64,
+    /// Sample rate in Hz (bandwidth = sample_rate).
+    sample_rate: f64,
 }
 
 impl WaterfallRenderer {
@@ -48,6 +52,8 @@ impl WaterfallRenderer {
             off_ctx,
             off_w: 0,
             off_h: 0,
+            center_freq: 100_000_000.0,
+            sample_rate: 2_400_000.0,
         })
     }
 
@@ -154,7 +160,60 @@ impl WaterfallRenderer {
                 self.ctx
                     .fill_text(&format!("{:.0} dB", db_line), 4.0, y - 2.0)?;
             }
+
+            // ── Frequency labels along bottom of spectrum area ─────────
+            self.draw_frequency_labels(w, sh)?;
         }
+
+        Ok(())
+    }
+
+    /// Draw frequency grid lines and labels on the spectrum area.
+    fn draw_frequency_labels(&self, w: f64, sh: f64) -> Result<(), JsValue> {
+        let half_bw = self.sample_rate / 2.0;
+        let f_left = self.center_freq - half_bw;
+        let f_right = self.center_freq + half_bw;
+
+        // Choose a nice step based on bandwidth
+        let step = nice_freq_step(self.sample_rate);
+
+        // First grid line at or above f_left, aligned to step
+        let first = (f_left / step).ceil() * step;
+
+        self.ctx.set_stroke_style_str("rgba(255,255,255,0.12)");
+        self.ctx.set_line_width(0.5);
+        self.ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+        self.ctx.set_font("10px monospace");
+        self.ctx.set_text_align("center");
+
+        let mut f = first;
+        while f <= f_right {
+            let x = ((f - f_left) / self.sample_rate) * w;
+            // Vertical grid line
+            self.ctx.begin_path();
+            self.ctx.move_to(x, 0.0);
+            self.ctx.line_to(x, sh);
+            self.ctx.stroke();
+
+            // Frequency label
+            let label = format_freq(f);
+            self.ctx.fill_text(&label, x, sh - 3.0)?;
+
+            f += step;
+        }
+
+        // Center marker (triangle)
+        let cx = w / 2.0;
+        self.ctx.set_fill_style_str("rgba(255,100,100,0.8)");
+        self.ctx.begin_path();
+        self.ctx.move_to(cx - 4.0, sh);
+        self.ctx.line_to(cx + 4.0, sh);
+        self.ctx.line_to(cx, sh - 6.0);
+        self.ctx.close_path();
+        self.ctx.fill();
+
+        // Reset text align
+        self.ctx.set_text_align("start");
 
         Ok(())
     }
@@ -165,5 +224,41 @@ impl WaterfallRenderer {
         self.width = width;
         self.height = height;
         self.spectrum_height = height / 4;
+    }
+
+    /// Update the frequency information for labels.
+    pub fn set_frequency_info(&mut self, center_freq: f64, sample_rate: f64) {
+        self.center_freq = center_freq;
+        self.sample_rate = sample_rate;
+    }
+}
+
+/// Choose a nice frequency step for grid lines based on bandwidth.
+fn nice_freq_step(bandwidth: f64) -> f64 {
+    // We want roughly 5-10 grid lines across the display
+    let rough_step = bandwidth / 8.0;
+    let magnitude = 10.0_f64.powf(rough_step.log10().floor());
+    let normalized = rough_step / magnitude;
+    let nice = if normalized < 1.5 {
+        1.0
+    } else if normalized < 3.5 {
+        2.0
+    } else if normalized < 7.5 {
+        5.0
+    } else {
+        10.0
+    };
+    nice * magnitude
+}
+
+/// Format frequency as a human-readable string.
+fn format_freq(hz: f64) -> String {
+    let mhz = hz / 1_000_000.0;
+    if mhz.fract().abs() < 0.0005 {
+        format!("{:.0} MHz", mhz)
+    } else if (mhz * 10.0).fract().abs() < 0.005 {
+        format!("{:.1}", mhz)
+    } else {
+        format!("{:.2}", mhz)
     }
 }

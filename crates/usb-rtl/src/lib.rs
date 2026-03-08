@@ -54,8 +54,9 @@ const XTAL_FREQ: u32 = 28_800_000;
 // Bulk endpoint for IQ data (EP1 IN)
 const BULK_ENDPOINT: u8 = 0x01;
 
-// Default read block size (bytes)
-const DEFAULT_BLOCK_SIZE: u32 = 16384;
+// Default read block size (bytes) — must sustain sample rate throughput
+// At 2.4 MSps × 2 bytes = 4.8 MB/s; with ~20 reads/sec → ~240KB/read
+const DEFAULT_BLOCK_SIZE: u32 = 131072;
 
 // LPF coefficients for RTL2832U init (regs 0x1C..0x2F on demod page 1)
 const LPF_COEFS: [u8; 20] = [

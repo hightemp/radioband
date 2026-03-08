@@ -66,6 +66,9 @@ function __wbg_get_imports() {
             const ret = arg0.clearHalt(__wbindgen_enum_UsbDirection[arg1], arg2);
             return ret;
         },
+        __wbg_closePath_f96bcae0fc7087a9: function(arg0) {
+            arg0.closePath();
+        },
         __wbg_close_3d93056629565c57: function(arg0) {
             const ret = arg0.close();
             return ret;
@@ -125,6 +128,9 @@ function __wbg_get_imports() {
         __wbg_fillText_b1722b6179692b85: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
             arg0.fillText(getStringFromWasm0(arg1, arg2), arg3, arg4);
         }, arguments); },
+        __wbg_fill_c0bb5e0ec0d7fcf9: function(arg0) {
+            arg0.fill();
+        },
         __wbg_getContext_f04bf8f22dcb2d53: function() { return handleError(function (arg0, arg1, arg2) {
             const ret = arg0.getContext(getStringFromWasm0(arg1, arg2));
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -395,6 +401,9 @@ function __wbg_get_imports() {
         },
         __wbg_set_strokeStyle_a5baa9565d8b6485: function(arg0, arg1, arg2) {
             arg0.strokeStyle = getStringFromWasm0(arg1, arg2);
+        },
+        __wbg_set_textAlign_8f846effafbae46d: function(arg0, arg1, arg2) {
+            arg0.textAlign = getStringFromWasm0(arg1, arg2);
         },
         __wbg_set_textContent_1e964492a2410e92: function(arg0, arg1, arg2) {
             arg0.textContent = arg1 === 0 ? undefined : getStringFromWasm0(arg1, arg2);
