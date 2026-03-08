@@ -137,6 +137,12 @@ impl RtlSdr {
         sdr.close_i2c().await?;
         log("RTL-SDR: R820T tuner initialized");
 
+        // Set IF frequency in demod to match R820T IF offset.
+        // Without this, the baseband is shifted by 3.57 MHz and
+        // stations won't appear centered.
+        sdr.set_if_frequency(R820T_IF_FREQ).await?;
+        log("RTL-SDR: IF frequency set");
+
         sdr.set_sample_rate(config.sample_rate).await?;
 
         sdr.open_i2c().await?;
@@ -147,11 +153,10 @@ impl RtlSdr {
             config.center_freq
         ));
 
-        if config.gain != 0 {
-            sdr.open_i2c().await?;
-            sdr.set_r820t_gain(config.gain).await?;
-            sdr.close_i2c().await?;
-        }
+        // Always set gain (even gain=0 sets proper AGC mode)
+        sdr.open_i2c().await?;
+        sdr.set_r820t_gain(config.gain).await?;
+        sdr.close_i2c().await?;
 
         sdr.reset_buffer().await?;
         log("RTL-SDR: ready");
@@ -383,8 +388,9 @@ impl RtlSdr {
         // 6–7. Reset demod
         self.demod_write_reg(1, 0x01, 0x14, 1).await?;
         self.demod_write_reg(1, 0x01, 0x10, 1).await?;
-        // 8. Spectrum
-        self.demod_write_reg(1, 0x15, 0x00, 1).await?;
+        // 8. Spectrum inversion — R820T requires inverted spectrum
+        // Reference: r8xx.ts open() sets this to 0x01
+        self.demod_write_reg(1, 0x15, 0x01, 1).await?;
         // 9–11. Carrier offset = 0
         self.demod_write_reg(1, 0x16, 0x00, 1).await?;
         self.demod_write_reg(1, 0x17, 0x00, 1).await?;
@@ -486,21 +492,66 @@ impl RtlSdr {
         Ok(())
     }
 
+    /// Set IF frequency in the RTL2832U demodulator.
+    /// Formula from reference: multiplier = -floor(freq * 2^22 / xtal)
+    async fn set_if_frequency(&self, freq: u32) -> Result<(), JsValue> {
+        let multiplier = -((freq as i64 * (1i64 << 22)) / XTAL_FREQ as i64) as i32;
+        self.demod_write_reg(1, 0x19, ((multiplier >> 16) & 0x3F) as u16, 1)
+            .await?;
+        self.demod_write_reg(1, 0x1A, ((multiplier >> 8) & 0xFF) as u16, 1)
+            .await?;
+        self.demod_write_reg(1, 0x1B, (multiplier & 0xFF) as u16, 1)
+            .await?;
+        Ok(())
+    }
+
+    /// Set R820T gain.  gain_tenth_db=0 → auto (AGC), >0 → manual.
+    ///
+    /// Bit polarity from reference (r8xx.ts):
+    ///   reg 0x05 bit[4]: 0=auto LNA,  1=manual LNA
+    ///   reg 0x07 bit[4]: 1=auto mixer, 0=manual mixer  (INVERTED!)
+    ///   reg 0x0C mask 0b10011111: bit[7]=0, bit[4]=0 (VGA code-controlled)
     async fn set_r820t_gain(&self, gain_tenth_db: i32) -> Result<(), JsValue> {
-        let gain = gain_tenth_db.clamp(0, 500);
-        let lna = ((gain / 35) as u8).min(15);
-        let vga = ((gain / 20) as u8).min(15);
+        if gain_tenth_db == 0 {
+            // Auto gain — matches reference setAutoGain()
+            // LNA auto: reg 0x05 bit[4] = 0
+            let r05 = self.read_r820t_reg(0x05).await?;
+            self.write_r820t_reg(0x05, r05 & !0x10).await?;
+            // Mixer auto: reg 0x07 bit[4] = 1
+            let r07 = self.read_r820t_reg(0x07).await?;
+            self.write_r820t_reg(0x07, r07 | 0x10).await?;
+            // VGA code-controlled, gain index 0x0B (26.5 dB)
+            let r0c = self.read_r820t_reg(0x0C).await?;
+            self.write_r820t_reg(0x0C, (r0c & 0x60) | 0x0B).await?;
+            log("RTL-SDR: gain set to auto (AGC)");
+        } else {
+            // Manual gain — matches reference setManualGain()
+            let gain_db = gain_tenth_db as f32 / 10.0;
+            let fullsteps = (gain_db / 3.5).floor() as u8;
+            let halfsteps = if gain_db - 3.5 * fullsteps as f32 >= 2.3 {
+                1u8
+            } else {
+                0u8
+            };
+            let lna_idx = (fullsteps + halfsteps).min(15);
+            let mix_idx = fullsteps.min(15);
 
-        let r05 = self.read_r820t_reg(0x05).await?;
-        self.write_r820t_reg(0x05, (r05 & 0xF0) | lna).await?;
+            // LNA manual: reg 0x05 bit[4] = 1, bits[3:0] = lna_idx
+            let r05 = self.read_r820t_reg(0x05).await?;
+            self.write_r820t_reg(0x05, (r05 & 0xE0) | 0x10 | lna_idx)
+                .await?;
+            // Mixer manual: reg 0x07 bit[4] = 0, bits[3:0] = mix_idx
+            let r07 = self.read_r820t_reg(0x07).await?;
+            self.write_r820t_reg(0x07, (r07 & 0xE0) | mix_idx).await?;
+            // VGA code-controlled, gain index 0x08 (16 dB)
+            let r0c = self.read_r820t_reg(0x0C).await?;
+            self.write_r820t_reg(0x0C, (r0c & 0x60) | 0x08).await?;
 
-        let r07 = self.read_r820t_reg(0x07).await?;
-        self.write_r820t_reg(0x07, (r07 & 0xEF) | 0x10).await?;
-
-        let r0c = self.read_r820t_reg(0x0C).await?;
-        self.write_r820t_reg(0x0C, (r0c & 0xF0) | vga).await?;
-
-        log(&format!("RTL-SDR: gain set to {} tenths dB", gain_tenth_db));
+            log(&format!(
+                "RTL-SDR: gain manual LNA={} MIX={} VGA=8",
+                lna_idx, mix_idx
+            ));
+        }
         Ok(())
     }
 }
