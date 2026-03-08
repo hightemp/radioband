@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Radioband — WebUSB SDR</title>
+  
+<script type="module">
+import init, * as bindings from '/app-ui.js';
+const wasm = await init({ module_or_path: '/app-ui_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+  <link rel="stylesheet" href="/style.css" integrity="sha384-cOiCQw+io1mBCoMdVUT0b5hdIF0HNP3V0hVzMgmeN9HrHzc2M1AY9+gcSf6N1yE7"/>
+  
+  
+  
+<link rel="modulepreload" href="/app-ui.js" crossorigin="anonymous" integrity="sha384-4ipU5Hw0AAk569Cigg2sSnvjXlAzymFIf39oWj48KQNx7nv78xiZzMrCMPSPm/CS"><link rel="preload" href="/app-ui_bg.wasm" crossorigin="anonymous" integrity="sha384-4EvyMgvFcLnN6gvDlPs5BWN12k93QiFVqK7g72D2XnkKLWreguulLPXzGC4X/5jZ" as="fetch" type="application/wasm"></head>
+
+<body>
+  <div id="app">
+    <noscript>This application requires JavaScript and WebAssembly.</noscript>
+  </div>
+</body>
+
+</html>

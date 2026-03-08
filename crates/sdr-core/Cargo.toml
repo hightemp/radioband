@@ -1,0 +1,8 @@
+[package]
+name = "sdr-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustfft = { workspace = true }
+num-complex = { workspace = true }

@@ -1,0 +1,18 @@
+[package]
+name = "sdr-worker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sdr-core = { path = "../sdr-core" }
+wasm-bindgen = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "DedicatedWorkerGlobalScope",
+    "MessageEvent",
+    "console",
+] }
+console_error_panic_hook = { workspace = true }

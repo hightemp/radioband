@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Radioband — WebUSB SDR</title>
+  <link data-trunk rel="rust" href="crates/app-ui/Cargo.toml" data-wasm-opt="z" />
+  <link data-trunk rel="css" href="static/style.css" />
+  <link data-trunk rel="copy-file" href="static/worker.js" />
+  <link data-trunk rel="copy-file" href="static/audio-worklet-processor.js" />
+  <link data-trunk rel="copy-dir" href="static/worker-pkg" />
+</head>
+
+<body>
+  <div id="app">
+    <noscript>This application requires JavaScript and WebAssembly.</noscript>
+  </div>
+</body>
+
+</html>

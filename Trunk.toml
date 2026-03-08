@@ -1,0 +1,15 @@
+[build]
+target = "index.html"
+dist   = "docs"
+filehash = false
+
+[watch]
+ignore = ["docs", "static/worker-pkg", "target"]
+
+[[hooks]]
+stage = "pre_build"
+command = "bash"
+command_arguments = [
+    "-c",
+    "cargo build --target wasm32-unknown-unknown --release -p sdr-worker && wasm-bindgen target/wasm32-unknown-unknown/release/sdr_worker.wasm --out-dir static/worker-pkg --target no-modules --no-typescript --omit-default-module-path"
+]

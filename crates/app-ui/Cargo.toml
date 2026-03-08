@@ -1,0 +1,41 @@
+[package]
+name = "app-ui"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+sdr-core = { path = "../sdr-core" }
+usb-rtl = { path = "../usb-rtl" }
+audio-bridge = { path = "../audio-bridge" }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Window",
+    "Document",
+    "Element",
+    "HtmlElement",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "HtmlInputElement",
+    "HtmlSelectElement",
+    "HtmlButtonElement",
+    "HtmlDivElement",
+    "HtmlSpanElement",
+    "Worker",
+    "WorkerOptions",
+    "MessageEvent",
+    "Event",
+    "EventTarget",
+    "Navigator",
+    "Usb",
+    "UsbDevice",
+    "UsbDeviceFilter",
+    "UsbDeviceRequestOptions",
+    "console",
+] }
+console_error_panic_hook = { workspace = true }

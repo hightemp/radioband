@@ -1,0 +1,30 @@
+[package]
+name = "usb-rtl"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true, features = [
+    "Navigator",
+    "Window",
+    "Usb",
+    "UsbDevice",
+    "UsbDeviceFilter",
+    "UsbDeviceRequestOptions",
+    "UsbControlTransferParameters",
+    "UsbInTransferResult",
+    "UsbOutTransferResult",
+    "UsbRequestType",
+    "UsbRecipient",
+    "UsbDirection",
+    "UsbTransferStatus",
+    "UsbConfiguration",
+    "UsbInterface",
+    "UsbAlternateInterface",
+    "UsbEndpoint",
+    "console",
+] }
+console_error_panic_hook = { workspace = true }
