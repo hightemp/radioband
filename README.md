@@ -4,6 +4,8 @@ Browser-based SPA on **Rust + WebAssembly** for receiving FM / AM radio via
 **RTL-SDR** (RTL2832U + R820T) through the **WebUSB** API.
 Runs entirely in the browser — no server, no native driver, no extensions.
 
+DEMO: https://hightemp.github.io/radioband/
+
 ## Features
 
 | Feature | Status |
