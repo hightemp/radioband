@@ -22,9 +22,11 @@ use waterfall::WaterfallRenderer;
 
 // ── Shared State ───────────────────────────────────────────────────────────
 
+/// UI-only state that never touches async.  `sdr` lives in its own RefCell
+/// so we can borrow it independently and never hold the main state lock
+/// across an `.await`.
 struct AppState {
     worker: Worker,
-    sdr: Option<RtlSdr>,
     audio: Option<AudioBridge>,
     renderer: Option<WaterfallRenderer>,
     running: bool,
@@ -35,6 +37,11 @@ struct AppState {
     sample_rate: u32,
     fft_size: u32,
 }
+
+/// SDR device lives in its own cell so it can be borrowed independently
+/// from the UI state.  This prevents `RefCell already borrowed` panics
+/// when an async USB transfer yields back to the event loop.
+type SdrCell = Rc<RefCell<Option<RtlSdr>>>;
 
 // ── Entry Point ────────────────────────────────────────────────────────────
 
@@ -119,7 +126,6 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
 
     let state = Rc::new(RefCell::new(AppState {
         worker,
-        sdr: None,
         audio: None,
         renderer: None,
         running: false,
@@ -130,6 +136,8 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
         sample_rate: 2_400_000,
         fft_size: 2048,
     }));
+
+    let sdr_cell: SdrCell = Rc::new(RefCell::new(None));
 
     // Set up waterfall renderer
     {
@@ -204,12 +212,14 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Connect button ─────────────────────────────────────────────────
     {
         let state_c = state.clone();
+        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
             let state_cc = state_c.clone();
+            let sdr_cc = sdr_c.clone();
             let doc_cc = doc_c.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match connect_device(&state_cc, &doc_cc).await {
+                match connect_device(&state_cc, &sdr_cc, &doc_cc).await {
                     Ok(_) => set_status(&doc_cc, "Connected", "connected"),
                     Err(e) => show_error(&doc_cc, &format!("Connect failed: {:?}", e)),
                 }
@@ -242,12 +252,14 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Disconnect button ──────────────────────────────────────────────
     {
         let state_c = state.clone();
+        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
             let state_cc = state_c.clone();
+            let sdr_cc = sdr_c.clone();
             let doc_cc = doc_c.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                let _ = disconnect(&state_cc, &doc_cc).await;
+                let _ = disconnect(&state_cc, &sdr_cc, &doc_cc).await;
             });
         }) as Box<dyn FnMut(_)>);
         let btn: HtmlButtonElement = doc
@@ -261,12 +273,14 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Play button ────────────────────────────────────────────────────
     {
         let state_c = state.clone();
+        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
             let state_cc = state_c.clone();
+            let sdr_cc = sdr_c.clone();
             let doc_cc = doc_c.clone();
             wasm_bindgen_futures::spawn_local(async move {
-                match start_streaming(&state_cc, &doc_cc).await {
+                match start_streaming(&state_cc, &sdr_cc, &doc_cc).await {
                     Ok(_) => set_status(&doc_cc, "Streaming", "streaming"),
                     Err(e) => show_error(&doc_cc, &format!("Play failed: {:?}", e)),
                 }
@@ -295,20 +309,24 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Set Frequency button ───────────────────────────────────────────
     {
         let state_c = state.clone();
+        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
             let state_cc = state_c.clone();
+            let sdr_cc = sdr_c.clone();
             let doc_cc = doc_c.clone();
             wasm_bindgen_futures::spawn_local(async move {
                 if let Some(input) = doc_cc.get_element_by_id("input-freq") {
                     let input: HtmlInputElement = input.unchecked_into();
                     if let Ok(mhz) = input.value().parse::<f64>() {
                         let freq = (mhz * 1_000_000.0) as u32;
-                        let mut s = state_cc.borrow_mut();
-                        s.frequency = freq;
-                        if let Some(ref mut sdr) = s.sdr {
+                        state_cc.borrow_mut().frequency = freq;
+                        // Take SDR out so no borrow spans the awaits
+                        let sdr_opt = sdr_cc.borrow_mut().take();
+                        if let Some(mut sdr) = sdr_opt {
                             let _ = sdr.set_center_freq(freq).await;
                             let _ = sdr.reset_buffer().await;
+                            *sdr_cc.borrow_mut() = Some(sdr);
                         }
                     }
                 }
@@ -383,6 +401,7 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
 
 async fn connect_device(
     state: &Rc<RefCell<AppState>>,
+    sdr_cell: &SdrCell,
     doc: &Document,
 ) -> Result<(), JsValue> {
     let device = request_device().await?;
@@ -411,7 +430,7 @@ async fn connect_device(
         s.worker.post_message(&msg)?;
     }
 
-    state.borrow_mut().sdr = Some(sdr);
+    *sdr_cell.borrow_mut() = Some(sdr);
     state.borrow_mut().audio = Some(audio);
     state.borrow_mut().mock_mode = false;
 
@@ -455,20 +474,21 @@ async fn start_mock_mode(
 
 async fn disconnect(
     state: &Rc<RefCell<AppState>>,
+    sdr_cell: &SdrCell,
     doc: &Document,
 ) -> Result<(), JsValue> {
     state.borrow_mut().running = false;
 
-    {
-        let mut s = state.borrow_mut();
-        if let Some(ref sdr) = s.sdr {
-            let _ = sdr.close().await;
-        }
-        s.sdr = None;
-        if let Some(ref audio) = s.audio {
-            let _ = audio.suspend().await;
-        }
-        s.audio = None;
+    // Take SDR out so no borrow is held across await
+    let sdr_opt = sdr_cell.borrow_mut().take();
+    if let Some(sdr) = sdr_opt {
+        let _ = sdr.close().await;
+    }
+
+    // Take audio out so no borrow is held across await
+    let audio_opt = state.borrow_mut().audio.take();
+    if let Some(audio) = audio_opt {
+        let _ = audio.suspend().await;
     }
 
     set_status(doc, "Disconnected", "disconnected");
@@ -485,29 +505,36 @@ async fn disconnect(
 
 async fn start_streaming(
     state: &Rc<RefCell<AppState>>,
+    sdr_cell: &SdrCell,
     doc: &Document,
 ) -> Result<(), JsValue> {
-    {
-        let mut s = state.borrow_mut();
-        s.running = true;
-        if let Some(ref audio) = s.audio {
-            audio.resume().await?;
-        }
+    state.borrow_mut().running = true;
+
+    // Take audio out temporarily so the borrow doesn't span the await
+    let audio_opt = state.borrow_mut().audio.take();
+    if let Some(ref audio) = audio_opt {
+        audio.resume().await?;
     }
+    state.borrow_mut().audio = audio_opt;
 
     set_btn_enabled(doc, "btn-play", false);
     set_btn_enabled(doc, "btn-stop", true);
 
     let state_c = state.clone();
+    let sdr_c = sdr_cell.clone();
     wasm_bindgen_futures::spawn_local(async move {
-        read_loop(state_c).await;
+        read_loop(state_c, sdr_c).await;
     });
 
     Ok(())
 }
 
 /// Main read loop: reads IQ from USB (or mock) and sends to worker.
-async fn read_loop(state: Rc<RefCell<AppState>>) {
+///
+/// Key invariant: we never hold a `RefCell` borrow across an `.await`.
+/// For the USB path we *take* the SDR out of its cell, perform the
+/// blocking read with full ownership, then put it back.
+async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
     loop {
         let is_running = state.borrow().running;
         if !is_running {
@@ -518,41 +545,39 @@ async fn read_loop(state: Rc<RefCell<AppState>>) {
 
         if is_mock {
             // Ask worker to generate mock data and process it
-            let s = state.borrow();
-            let msg = Object::new();
-            let _ = Reflect::set(&msg, &"type".into(), &"mock".into());
-            let _ = Reflect::set(&msg, &"numBytes".into(), &JsValue::from(16384u32));
-            let _ = s.worker.post_message(&msg);
-            drop(s);
-        } else {
-            // Read from actual USB device
-            let result = {
+            {
                 let s = state.borrow();
-                if let Some(ref sdr) = s.sdr {
-                    Some(sdr.read_block().await)
-                } else {
-                    None
-                }
-            };
+                let msg = Object::new();
+                let _ = Reflect::set(&msg, &"type".into(), &"mock".into());
+                let _ = Reflect::set(&msg, &"numBytes".into(), &JsValue::from(16384u32));
+                let _ = s.worker.post_message(&msg);
+            }
+        } else {
+            // Take SDR out so no borrow is held across the USB await
+            let sdr_opt = sdr_cell.borrow_mut().take();
+            if let Some(sdr) = sdr_opt {
+                let result = sdr.read_block().await;
+                // Put SDR back immediately
+                *sdr_cell.borrow_mut() = Some(sdr);
 
-            match result {
-                Some(Ok(data)) => {
-                    let s = state.borrow();
-                    let array = Uint8Array::from(data.as_slice());
-                    let msg = Object::new();
-                    let _ = Reflect::set(&msg, &"type".into(), &"iq_data".into());
-                    let _ = Reflect::set(&msg, &"data".into(), &array);
-                    let _ = s.worker.post_message(&msg);
+                match result {
+                    Ok(data) => {
+                        let s = state.borrow();
+                        let array = Uint8Array::from(data.as_slice());
+                        let msg = Object::new();
+                        let _ = Reflect::set(&msg, &"type".into(), &"iq_data".into());
+                        let _ = Reflect::set(&msg, &"data".into(), &array);
+                        let _ = s.worker.post_message(&msg);
+                    }
+                    Err(e) => {
+                        console::error_1(&format!("USB read error: {:?}", e).into());
+                        state.borrow_mut().running = false;
+                        break;
+                    }
                 }
-                Some(Err(e)) => {
-                    console::error_1(&format!("USB read error: {:?}", e).into());
-                    state.borrow_mut().running = false;
-                    break;
-                }
-                None => {
-                    state.borrow_mut().running = false;
-                    break;
-                }
+            } else {
+                state.borrow_mut().running = false;
+                break;
             }
         }
 
