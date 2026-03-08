@@ -535,9 +535,12 @@ async fn start_streaming(
 /// For the USB path we *take* the SDR out of its cell, perform the
 /// blocking read with full ownership, then put it back.
 async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
+    console::log_1(&"read_loop: started".into());
+    let mut frame_count: u32 = 0;
     loop {
         let is_running = state.borrow().running;
         if !is_running {
+            console::log_1(&"read_loop: stopped (running=false)".into());
             break;
         }
 
@@ -556,12 +559,26 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
             // Take SDR out so no borrow is held across the USB await
             let sdr_opt = sdr_cell.borrow_mut().take();
             if let Some(sdr) = sdr_opt {
+                if frame_count == 0 {
+                    console::log_1(&"read_loop: calling read_block...".into());
+                }
                 let result = sdr.read_block().await;
                 // Put SDR back immediately
                 *sdr_cell.borrow_mut() = Some(sdr);
 
                 match result {
                     Ok(data) => {
+                        frame_count += 1;
+                        if frame_count <= 3 || frame_count % 100 == 0 {
+                            console::log_1(
+                                &format!(
+                                    "read_loop: frame {} — {} bytes read",
+                                    frame_count,
+                                    data.len()
+                                )
+                                .into(),
+                            );
+                        }
                         let s = state.borrow();
                         let array = Uint8Array::from(data.as_slice());
                         let msg = Object::new();
@@ -576,6 +593,7 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
                     }
                 }
             } else {
+                console::error_1(&"read_loop: sdr_cell is None!".into());
                 state.borrow_mut().running = false;
                 break;
             }
