@@ -62,6 +62,10 @@ function __wbg_get_imports() {
             const ret = arg0.claimInterface(arg1);
             return ret;
         },
+        __wbg_clearHalt_b5392584871c074c: function(arg0, arg1, arg2) {
+            const ret = arg0.clearHalt(__wbindgen_enum_UsbDirection[arg1], arg2);
+            return ret;
+        },
         __wbg_close_3d93056629565c57: function(arg0) {
             const ret = arg0.close();
             return ret;
@@ -580,6 +584,9 @@ function wasm_bindgen__convert__closures_____invoke__h97091db23ad68eb0(arg0, arg
 function wasm_bindgen__convert__closures_____invoke__h15cec6ad6569921e(arg0, arg1, arg2, arg3) {
     wasm.wasm_bindgen__convert__closures_____invoke__h15cec6ad6569921e(arg0, arg1, arg2, arg3);
 }
+
+
+const __wbindgen_enum_UsbDirection = ["in", "out"];
 
 
 const __wbindgen_enum_UsbRecipient = ["device", "interface", "endpoint", "other"];
