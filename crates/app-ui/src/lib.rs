@@ -321,12 +321,16 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
                     if let Ok(mhz) = input.value().parse::<f64>() {
                         let freq = (mhz * 1_000_000.0) as u32;
                         state_cc.borrow_mut().frequency = freq;
-                        // Take SDR out so no borrow spans the awaits
-                        let sdr_opt = sdr_cc.borrow_mut().take();
-                        if let Some(mut sdr) = sdr_opt {
-                            let _ = sdr.set_center_freq(freq).await;
-                            let _ = sdr.reset_buffer().await;
-                            *sdr_cc.borrow_mut() = Some(sdr);
+                        // Retry loop: SDR may be temporarily held by read_loop
+                        for _ in 0..50 {
+                            let sdr_opt = sdr_cc.borrow_mut().take();
+                            if let Some(mut sdr) = sdr_opt {
+                                let _ = sdr.set_center_freq(freq).await;
+                                let _ = sdr.reset_buffer().await;
+                                *sdr_cc.borrow_mut() = Some(sdr);
+                                break;
+                            }
+                            sleep_ms(20).await;
                         }
                     }
                 }
@@ -343,22 +347,38 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
     // ── Gain slider ────────────────────────────────────────────────────
     {
         let state_c = state.clone();
+        let sdr_c = sdr_cell.clone();
         let doc_c = doc.clone();
         let handler = Closure::wrap(Box::new(move |_: Event| {
-            if let Some(input) = doc_c.get_element_by_id("input-gain") {
-                let input: HtmlInputElement = input.unchecked_into();
-                if let Ok(val) = input.value().parse::<i32>() {
-                    state_c.borrow_mut().gain = val;
-                    if let Some(label) = doc_c.get_element_by_id("gain-value") {
-                        let text = if val == 0 {
-                            "Auto".to_string()
-                        } else {
-                            format!("{:.1} dB", val as f32 / 10.0)
-                        };
-                        label.set_text_content(Some(&text));
+            let state_cc = state_c.clone();
+            let sdr_cc = sdr_c.clone();
+            let doc_cc = doc_c.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Some(input) = doc_cc.get_element_by_id("input-gain") {
+                    let input: HtmlInputElement = input.unchecked_into();
+                    if let Ok(val) = input.value().parse::<i32>() {
+                        state_cc.borrow_mut().gain = val;
+                        if let Some(label) = doc_cc.get_element_by_id("gain-value") {
+                            let text = if val == 0 {
+                                "Auto".to_string()
+                            } else {
+                                format!("{:.1} dB", val as f32 / 10.0)
+                            };
+                            label.set_text_content(Some(&text));
+                        }
+                        // Apply gain to hardware if connected
+                        for _ in 0..50 {
+                            let sdr_opt = sdr_cc.borrow_mut().take();
+                            if let Some(mut sdr) = sdr_opt {
+                                let _ = sdr.set_gain(val).await;
+                                *sdr_cc.borrow_mut() = Some(sdr);
+                                break;
+                            }
+                            sleep_ms(20).await;
+                        }
                     }
                 }
-            }
+            });
         }) as Box<dyn FnMut(_)>);
         let input: HtmlInputElement = doc
             .get_element_by_id("input-gain")
@@ -593,9 +613,8 @@ async fn read_loop(state: Rc<RefCell<AppState>>, sdr_cell: SdrCell) {
                     }
                 }
             } else {
-                console::error_1(&"read_loop: sdr_cell is None!".into());
-                state.borrow_mut().running = false;
-                break;
+                // SDR temporarily taken by another operation (e.g. frequency change)
+                // Just wait and retry on next iteration
             }
         }
 
