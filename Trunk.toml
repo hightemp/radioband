@@ -3,6 +3,7 @@ target = "index.html"
 dist   = "docs"
 filehash = false
 public_url = "/radioband/"
+no_sri = true
 
 [watch]
 ignore = ["docs", "static/worker-pkg", "target"]
