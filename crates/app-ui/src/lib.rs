@@ -40,6 +40,8 @@ struct AppState {
     pending_freq: Option<u32>,
     /// Pending gain change (tenth-dB) to be applied by read_loop.
     pending_gain: Option<i32>,
+    /// Volume level 0.0–2.0 (stored so it can be applied when audio is initialized).
+    volume: f32,
 }
 
 /// SDR device lives in its own cell so it can be borrowed independently
@@ -109,6 +111,12 @@ fn build_ui(doc: &Document) -> Result<(), JsValue> {
                 </label>
             </div>
             <div class="control-group">
+                <label>Volume
+                    <input id="input-volume" type="range" min="0" max="200" value="100" step="1" />
+                    <span id="volume-value">100%</span>
+                </label>
+            </div>
+            <div class="control-group">
                 <button id="btn-play" class="btn btn-primary" disabled>▶ Play</button>
                 <button id="btn-stop" class="btn" disabled>⏹ Stop</button>
             </div>
@@ -141,6 +149,7 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
         fft_size: 2048,
         pending_freq: None,
         pending_gain: None,
+        volume: 1.0,
     }));
 
     let sdr_cell: SdrCell = Rc::new(RefCell::new(None));
@@ -395,7 +404,20 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
                 let _ = Reflect::set(&msg, &"mode".into(), &JsValue::from_str(&mode));
                 let _ = s.worker.post_message(&msg);
                 drop(s);
-                state_c.borrow_mut().mode = mode;
+                // Update passband visualization for the new mode
+                let (passband_hz, mode_label) = mode_to_passband(&mode);
+                let mut s = state_c.borrow_mut();
+                s.mode = mode.clone();
+                if let Some(ref mut renderer) = s.renderer {
+                    renderer.set_mode_bandwidth(passband_hz, mode_label);
+                }
+                console::log_1(
+                    &format!(
+                        "Radioband: passband updated for mode {}: {} Hz",
+                        mode, passband_hz
+                    )
+                    .into(),
+                );
             }
         }) as Box<dyn FnMut(_)>);
         let sel: HtmlSelectElement = doc
@@ -403,6 +425,38 @@ fn init_app(doc: &Document) -> Result<(), JsValue> {
             .unwrap()
             .dyn_into()?;
         sel.add_event_listener_with_callback("change", handler.as_ref().unchecked_ref())?;
+        handler.forget();
+    }
+
+    // ── Volume slider ──────────────────────────────────────────────────
+    {
+        let state_c = state.clone();
+        let doc_c = doc.clone();
+        let handler = Closure::wrap(Box::new(move |_: Event| {
+            if let Some(input) = doc_c.get_element_by_id("input-volume") {
+                let input: HtmlInputElement = input.unchecked_into();
+                if let Ok(val) = input.value().parse::<f64>() {
+                    let volume = (val / 100.0) as f32; // 0–200 → 0.0–2.0
+                    let pct = val as u32;
+                    let mut s = state_c.borrow_mut();
+                    s.volume = volume;
+                    if let Some(ref ab) = s.audio {
+                        ab.set_volume(volume);
+                    }
+                    if let Some(label) = doc_c.get_element_by_id("volume-value") {
+                        label.set_text_content(Some(&format!("{}%", pct)));
+                    }
+                    console::log_1(
+                        &format!("Radioband: volume set to {}%", pct).into(),
+                    );
+                }
+            }
+        }) as Box<dyn FnMut(_)>);
+        let input: HtmlInputElement = doc
+            .get_element_by_id("input-volume")
+            .unwrap()
+            .dyn_into()?;
+        input.add_event_listener_with_callback("input", handler.as_ref().unchecked_ref())?;
         handler.forget();
     }
 
@@ -431,6 +485,12 @@ async fn connect_device(
     let mut audio = AudioBridge::new()?;
     audio.init("./audio-worklet-processor.js").await?;
 
+    // Apply stored volume
+    {
+        let s = state.borrow();
+        audio.set_volume(s.volume);
+    }
+
     // Configure worker
     {
         let s = state.borrow();
@@ -446,13 +506,15 @@ async fn connect_device(
     state.borrow_mut().audio = Some(audio);
     state.borrow_mut().mock_mode = false;
 
-    // Update waterfall frequency labels
+    // Update waterfall frequency labels + passband
     {
         let mut s = state.borrow_mut();
         let freq = s.frequency as f64;
         let rate = s.sample_rate as f64;
+        let (passband_hz, mode_label) = mode_to_passband(&s.mode);
         if let Some(ref mut renderer) = s.renderer {
             renderer.set_frequency_info(freq, rate);
+            renderer.set_mode_bandwidth(passband_hz, mode_label);
         }
     }
 
@@ -472,6 +534,12 @@ async fn start_mock_mode(
     let mut audio = AudioBridge::new()?;
     audio.init("./audio-worklet-processor.js").await?;
 
+    // Apply stored volume
+    {
+        let s = state.borrow();
+        audio.set_volume(s.volume);
+    }
+
     // Configure worker
     {
         let s = state.borrow();
@@ -485,6 +553,15 @@ async fn start_mock_mode(
 
     state.borrow_mut().audio = Some(audio);
     state.borrow_mut().mock_mode = true;
+
+    // Update waterfall passband for current mode
+    {
+        let mut s = state.borrow_mut();
+        let (passband_hz, mode_label) = mode_to_passband(&s.mode);
+        if let Some(ref mut renderer) = s.renderer {
+            renderer.set_mode_bandwidth(passband_hz, mode_label);
+        }
+    }
 
     set_btn_enabled(doc, "btn-connect", false);
     set_btn_enabled(doc, "btn-mock", false);
@@ -700,10 +777,55 @@ fn set_btn_enabled(doc: &Document, id: &str, enabled: bool) {
     }
 }
 
+/// Map demodulation mode string to passband width (Hz) and label.
+pub fn mode_to_passband(mode: &str) -> (f64, &'static str) {
+    match mode {
+        "wfm" => (240_000.0, "WFM"),
+        "nfm" => (16_000.0, "NFM"),
+        "am" => (10_000.0, "AM"),
+        _ => (240_000.0, "WFM"),
+    }
+}
+
 async fn sleep_ms(ms: u32) {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let window = web_sys::window().unwrap();
         let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms as i32);
     });
     let _ = JsFuture::from(promise).await;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::mode_to_passband;
+
+    #[test]
+    fn test_mode_to_passband_wfm() {
+        let (bw, label) = mode_to_passband("wfm");
+        assert_eq!(bw, 240_000.0);
+        assert_eq!(label, "WFM");
+    }
+
+    #[test]
+    fn test_mode_to_passband_nfm() {
+        let (bw, label) = mode_to_passband("nfm");
+        assert_eq!(bw, 16_000.0);
+        assert_eq!(label, "NFM");
+    }
+
+    #[test]
+    fn test_mode_to_passband_am() {
+        let (bw, label) = mode_to_passband("am");
+        assert_eq!(bw, 10_000.0);
+        assert_eq!(label, "AM");
+    }
+
+    #[test]
+    fn test_mode_to_passband_unknown_defaults_to_wfm() {
+        let (bw, label) = mode_to_passband("unknown");
+        assert_eq!(bw, 240_000.0);
+        assert_eq!(label, "WFM");
+    }
 }

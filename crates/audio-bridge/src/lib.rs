@@ -5,15 +5,15 @@
 
 use js_sys::{Array, Float32Array};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
-use web_sys::{AudioContext, AudioWorkletNode, AudioWorkletNodeOptions, MessagePort};
+use web_sys::{AudioContext, AudioWorkletNode, AudioWorkletNodeOptions, GainNode, MessagePort};
 
 /// Manages the Web Audio pipeline.
 pub struct AudioBridge {
     ctx: AudioContext,
     worklet_node: Option<AudioWorkletNode>,
     port: Option<MessagePort>,
+    gain_node: Option<GainNode>,
 }
 
 impl AudioBridge {
@@ -24,6 +24,7 @@ impl AudioBridge {
             ctx,
             worklet_node: None,
             port: None,
+            gain_node: None,
         })
     }
 
@@ -46,13 +47,21 @@ impl AudioBridge {
         let node =
             AudioWorkletNode::new_with_options(&self.ctx, "radioband-processor", &options)?;
 
-        // Connect to destination
-        node.connect_with_audio_node(&self.ctx.destination())?;
+        // Create GainNode for volume control (default gain = 1.0)
+        let gain_node = GainNode::new(&self.ctx)?;
+        gain_node.gain().set_value(1.0);
+
+        // Wire: AudioWorkletNode → GainNode → destination
+        node.connect_with_audio_node(&gain_node)?;
+        gain_node.connect_with_audio_node(&self.ctx.destination())?;
+
+        web_sys::console::log_1(&"AudioBridge: GainNode inserted into audio chain".into());
 
         // Get MessagePort for sending PCM data
         let port = node.port()?;
         self.port = Some(port);
         self.worklet_node = Some(node);
+        self.gain_node = Some(gain_node);
 
         web_sys::console::log_1(&"AudioBridge: worklet initialized".into());
         Ok(())
@@ -85,5 +94,24 @@ impl AudioBridge {
 
     pub fn is_ready(&self) -> bool {
         self.worklet_node.is_some()
+    }
+
+    /// Set the output volume. `value`: 0.0 = silence, 1.0 = normal, 2.0 = 2x amplified.
+    pub fn set_volume(&self, value: f32) {
+        let clamped = value.clamp(0.0, 2.0);
+        if let Some(ref gain) = self.gain_node {
+            gain.gain().set_value(clamped);
+            web_sys::console::log_1(
+                &format!("AudioBridge: volume set to {:.2}", clamped).into(),
+            );
+        }
+    }
+
+    /// Get the current volume (0.0–2.0).
+    pub fn volume(&self) -> f32 {
+        self.gain_node
+            .as_ref()
+            .map(|g| g.gain().value())
+            .unwrap_or(1.0)
     }
 }

@@ -20,6 +20,11 @@ pub struct WaterfallRenderer {
     center_freq: f64,
     /// Sample rate in Hz (bandwidth = sample_rate).
     sample_rate: f64,
+    /// Passband width in Hz for the current demodulation mode.
+    /// WFM=240_000, NFM=16_000, AM=10_000.
+    passband_hz: f64,
+    /// Short mode label for the passband overlay (e.g. "WFM", "NFM", "AM").
+    mode_label: String,
 }
 
 impl WaterfallRenderer {
@@ -54,6 +59,8 @@ impl WaterfallRenderer {
             off_h: 0,
             center_freq: 100_000_000.0,
             sample_rate: 2_400_000.0,
+            passband_hz: 240_000.0,
+            mode_label: "WFM".to_string(),
         })
     }
 
@@ -163,6 +170,9 @@ impl WaterfallRenderer {
 
             // ── Frequency labels along bottom of spectrum area ─────────
             self.draw_frequency_labels(w, sh)?;
+
+            // ── Passband overlay (center + boundary lines + shading) ───
+            self.draw_passband_overlay(w, sh)?;
         }
 
         Ok(())
@@ -202,7 +212,7 @@ impl WaterfallRenderer {
             f += step;
         }
 
-        // Center marker (triangle)
+        // Center marker (small triangle at bottom — complements the passband center line)
         let cx = w / 2.0;
         self.ctx.set_fill_style_str("rgba(255,100,100,0.8)");
         self.ctx.begin_path();
@@ -226,10 +236,80 @@ impl WaterfallRenderer {
         self.spectrum_height = height / 4;
     }
 
+    /// Draw the passband overlay: semi-transparent fill + dashed boundary
+    /// lines + solid center line + mode label.
+    fn draw_passband_overlay(&self, w: f64, sh: f64) -> Result<(), JsValue> {
+        let half_bw = self.sample_rate / 2.0;
+        let f_left = self.center_freq - half_bw;
+        let half_pb = self.passband_hz / 2.0;
+
+        // Pixel positions for passband edges and center
+        let x_center = ((self.center_freq - f_left) / self.sample_rate) * w;
+        let x_lo = ((self.center_freq - half_pb - f_left) / self.sample_rate) * w;
+        let x_hi = ((self.center_freq + half_pb - f_left) / self.sample_rate) * w;
+
+        // ── Semi-transparent filled rectangle ──────────────────────────
+        self.ctx.set_fill_style_str("rgba(88,166,255,0.12)");
+        self.ctx.fill_rect(x_lo, 0.0, x_hi - x_lo, sh);
+
+        // ── Dashed boundary lines (left + right edges) ────────────────
+        let dash_arr = js_sys::Array::new();
+        dash_arr.push(&JsValue::from(4.0));
+        dash_arr.push(&JsValue::from(3.0));
+        self.ctx.set_line_dash(&dash_arr)?;
+        self.ctx.set_stroke_style_str("rgba(88,166,255,0.6)");
+        self.ctx.set_line_width(1.0);
+
+        // Left boundary
+        self.ctx.begin_path();
+        self.ctx.move_to(x_lo, 0.0);
+        self.ctx.line_to(x_lo, sh);
+        self.ctx.stroke();
+
+        // Right boundary
+        self.ctx.begin_path();
+        self.ctx.move_to(x_hi, 0.0);
+        self.ctx.line_to(x_hi, sh);
+        self.ctx.stroke();
+
+        // Reset dash pattern
+        let empty = js_sys::Array::new();
+        self.ctx.set_line_dash(&empty)?;
+
+        // ── Solid center line ──────────────────────────────────────────
+        self.ctx.set_stroke_style_str("rgba(255,100,100,0.8)");
+        self.ctx.set_line_width(1.5);
+        self.ctx.begin_path();
+        self.ctx.move_to(x_center, 0.0);
+        self.ctx.line_to(x_center, sh);
+        self.ctx.stroke();
+
+        // ── Mode + bandwidth label ─────────────────────────────────────
+        let half_khz = half_pb / 1000.0;
+        let label = if half_khz >= 1.0 {
+            format!("{} \u{00B1}{:.0}k", self.mode_label, half_khz)
+        } else {
+            format!("{} \u{00B1}{:.1}k", self.mode_label, half_khz)
+        };
+        self.ctx.set_fill_style_str("rgba(88,166,255,0.85)");
+        self.ctx.set_font("11px monospace");
+        self.ctx.set_text_align("center");
+        self.ctx.fill_text(&label, x_center, 12.0)?;
+        self.ctx.set_text_align("start");
+
+        Ok(())
+    }
+
     /// Update the frequency information for labels.
     pub fn set_frequency_info(&mut self, center_freq: f64, sample_rate: f64) {
         self.center_freq = center_freq;
         self.sample_rate = sample_rate;
+    }
+
+    /// Set the passband width for the current demodulation mode.
+    pub fn set_mode_bandwidth(&mut self, passband_hz: f64, mode_label: &str) {
+        self.passband_hz = passband_hz;
+        self.mode_label = mode_label.to_string();
     }
 }
 

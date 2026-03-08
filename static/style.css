@@ -109,6 +109,13 @@ input[type="range"] {
     color: var(--text-dim);
 }
 
+#volume-value {
+    display: inline-block;
+    min-width: 40px;
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
 /* ── Buttons ──────────────────────────────────────────────────────────── */
 
 .btn {
